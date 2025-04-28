@@ -44,8 +44,24 @@ def __capture_screenshot(page, url):
     print(f"Screenshot saved as {filename}")
 
 
-url = "https://www.marca.com/"
-take_screenshot = True
+from playwright.async_api import async_playwright
+
+playwright = await async_playwright().start()
+browser = await playwright.chromium.launch(headless=True)
+page = await browser.new_page()
+
+await page.goto("https://overpass-api.de/achavi/?changeset=142782344")
+# await page.locator("xpath=/html/body/div[1]").screenshot(path="screenshot.png")
+
+await page.wait_for_selector("#map_div")
+
+await page.wait_for_selector(".map-loaded-indicator")
+
+# Take a screenshot of the element
+element = await page.query_selector("#map_div")
+await element.screenshot(path="map_div_screenshot.png")
+
+await page.screenshot(path="screenshot.png", full_page=True)
 
 
 with sync_playwright() as playwright:
