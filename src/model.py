@@ -1,9 +1,11 @@
 import os
 
 import lightning as L
+import matplotlib.pyplot as plt
 import polars as pl
 import torch
 import torch.nn as nn
+import torchmetrics
 import torchvision.transforms as T
 from dotenv import load_dotenv
 from sklearn.model_selection import train_test_split
@@ -37,26 +39,11 @@ def split_data(data, test_size=0.2, random_state=42):
     return train, val, test
 
 
-data = read_data()
-train, val, test = split_data(data)
-
-
-INPUT_SIZE = 512
-
-image = read_image(path)
-resize = T.Resize((INPUT_SIZE, INPUT_SIZE))
-
-train[0]["path"].item()
-
-
 class CustomImageDataset(Dataset):
-    def __init__(
-        self, data: pl.DataFrame, img_dir: str, transform=None, target_transform=None
-    ):
+    def __init__(self, data: pl.DataFrame, img_dir: str, transform=None):
         self.data = data
         self.img_dir = img_dir
         self.transform = transform
-        self.target_transform = target_transform
 
     def __len__(self):
         return len(self.data)
@@ -74,25 +61,11 @@ class CustomImageDataset(Dataset):
 
         if self.transform:
             image = self.transform(image)
-        if self.target_transform:
-            label = self.target_transform(label)
+
+        # Normalize the image
+        image = image.float() / 255.0
+
         return image, label
-
-
-transforms = T.Compose(
-    [
-        T.Resize((INPUT_SIZE, INPUT_SIZE)),
-    ]
-)
-
-image_dataset = CustomImageDataset(
-    data=train,
-    img_dir=f"{os.environ['ROOT_PATH']}/images",
-    transform=None,
-    target_transform=None,
-)
-
-image_dataset[0]
 
 
 class CNNClassifier(nn.Module):
@@ -124,35 +97,114 @@ class CNNClassifier(nn.Module):
         x = x.view(x.size(0), -1)
 
         # Fully connected pass
-        x = self.dropout(x)
         x = self.relu(self.fc1(x))
+        x = self.dropout(x)
         x = self.fc2(x)
+
+        # Apply sigmoid activation
+        x = torch.sigmoid(x)
 
         return x
 
 
 class VandalismClassifier(L.LightningModule):
-    def __init__(self, model):
+    def __init__(self, model, lr=0.001):
         super().__init__()
         self.model = model
+        self.lr = lr
         self.loss_fn = torch.nn.BCELoss()
+        self.accuracy = torchmetrics.classification.Accuracy(
+            task="multiclass", num_classes=2
+        )
 
-    def training_step(self, batch):
+    def training_step(self, batch, batch_idx):
         images, targets = batch
         outputs = self.model(images)
-        loss = self.loss_fn(outputs, targets)
-        self.log("train_loss", loss)
+        loss = self.loss_fn(outputs, targets.view(-1, 1).float())
+        acc = self.accuracy(torch.sigmoid(outputs).round(), targets.view(-1, 1).float())
+        self.log("train loss", loss, on_epoch=True, prog_bar=True, logger=True)
+        self.log("train acc", acc, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
+    def validation_step(
+        self,
+        batch,
+    ):
+        images, targets = batch
+        outputs = self.model(images)
+        loss = self.loss_fn(outputs, targets.view(-1, 1).float())
+        self.log("val loss", loss, on_epoch=True, prog_bar=True, logger=True)
+
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.model.parameters(), lr=0.001)
+        return torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
 
-class ClassificationData(L.LightningDataModule):
-    def train_dataloader(self):
-        train_dataset = datasets.StanfordCars(
-            root=".", download=False, transform=DEFAULT_TRANSFORM
-        )
-        return torch.utils.data.DataLoader(
-            train_dataset, batch_size=256, shuffle=True, num_workers=5
-        )
+if __name__ == "__main__":
+    data = read_data()
+    train, val, test = split_data(data)
+
+    INPUT_SIZE = 512
+
+    # Data loaders
+    transforms = T.Compose(
+        [
+            T.Resize((INPUT_SIZE, INPUT_SIZE)),
+        ]
+    )
+
+    train_dataset = CustomImageDataset(
+        data=train,
+        img_dir=f"{os.environ['ROOT_PATH']}/images",
+        transform=transforms,
+    )
+
+    val_dataset = CustomImageDataset(
+        data=val,
+        img_dir=f"{os.environ['ROOT_PATH']}/images",
+        transform=transforms,
+    )
+
+    test_dataset = CustomImageDataset(
+        data=test,
+        img_dir=f"{os.environ['ROOT_PATH']}/images",
+        transform=transforms,
+    )
+
+    train_dataloader = DataLoader(train_dataset, batch_size=10, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=10, shuffle=False)
+    test_dataloader = DataLoader(test_dataset, batch_size=10, shuffle=False)
+
+    # Model
+    # device = torch.device(
+    #     "mps"
+    #     if torch.mps.is_available()
+    #     else "cuda"
+    #     if torch.cuda.is_available()
+    #     else "cpu"
+    # )
+    clf = VandalismClassifier(CNNClassifier(), lr=0.01)
+
+    trainer = L.Trainer(
+        accelerator="auto",
+        max_epochs=4,
+        log_every_n_steps=1,
+    )
+    trainer.fit(
+        model=clf, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader
+    )
+
+    model = clf.model
+    model = model.to(clf.device)
+
+    model.eval()
+
+    test_predictions = []
+    with torch.no_grad():
+        for images, targets in train_dataloader:
+            outputs = model(images)
+            preds = torch.sigmoid(outputs).round()
+            test_predictions.extend(preds.cpu().numpy().flatten())
+
+    test_predictions = torch.Tensor(test_predictions)
+
+    test_predictions
