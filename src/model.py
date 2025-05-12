@@ -175,36 +175,51 @@ if __name__ == "__main__":
     test_dataloader = DataLoader(test_dataset, batch_size=10, shuffle=False)
 
     # Model
-    # device = torch.device(
-    #     "mps"
-    #     if torch.mps.is_available()
-    #     else "cuda"
-    #     if torch.cuda.is_available()
-    #     else "cpu"
-    # )
+    device = torch.device(
+        "mps"
+        if torch.mps.is_available()
+        else "cuda"
+        if torch.cuda.is_available()
+        else "cpu"
+    )
     clf = VandalismClassifier(CNNClassifier(), lr=0.01)
 
-    trainer = L.Trainer(
-        accelerator="auto",
-        max_epochs=4,
-        log_every_n_steps=1,
-    )
-    trainer.fit(
-        model=clf, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader
-    )
+    model = CNNClassifier().to(device)
 
-    model = clf.model
-    model = model.to(clf.device)
+    size = len(train_dataloader.dataset)
+    model.train()
+    loss_fn = nn.BCELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+    num_epochs = 5
+    for epoch in range(num_epochs):
+        for batch_idx, (data, targets) in enumerate(train_dataloader):
+            # Forward pass
+            data = data.to(device)
+            targets = targets.to(device).view(-1, 1).float()
+            outputs = model(data)
+            loss = loss_fn(outputs, targets)
 
+            # Backward pass and optimization
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            # Print loss
+            if batch_idx % 10 == 0:
+                print(
+                    f"Epoch [{epoch + 1}/{num_epochs}], Step [{batch_idx + 1}/{len(train_dataloader)}], Loss: {loss.item():.4f}"
+                )
+    # Eval loop
     model.eval()
-
-    test_predictions = []
+    test_preds = []
     with torch.no_grad():
-        for images, targets in train_dataloader:
-            outputs = model(images)
-            preds = torch.sigmoid(outputs).round()
-            test_predictions.extend(preds.cpu().numpy().flatten())
+        for batch_idx, (data, targets) in enumerate(val_dataloader):
+            # Forward pass
+            data = data.to(device)
+            targets = targets.to(device).view(-1, 1).float()
+            outputs = model(data)
+            test_preds.extend(outputs.cpu().numpy())
 
-    test_predictions = torch.Tensor(test_predictions)
+    test_preds = torch.Tensor(test_preds).squeeze()
 
-    test_predictions
+    test_preds
