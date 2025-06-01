@@ -11,3 +11,7 @@ wheels/
 .devcontainer/
 .vscode/
 *.png
+data/images/
+*.parquet
+lightning_logs/
+*.env
